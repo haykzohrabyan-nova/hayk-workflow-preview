@@ -28,6 +28,7 @@ import { type NotifyColumnConfig } from "@/lib/board-notify";
 import { NotificationPopup } from "@/components/automation/notification-popup";
 import { createClient } from "@/lib/supabase/client";
 import { canDragInColumn, canDropIn, canDropOut } from "@/lib/permissions";
+import { cn } from "@/lib/utils";
 import {
   type MissingField,
 } from "@/lib/orders/validate-ready-to-move";
@@ -45,6 +46,17 @@ import type {
 import type { OrderOwner } from "./order-form-body";
 
 import type { CardNotificationBadge } from "@/lib/card-badges";
+import {
+  defaultCommEntry,
+  loadSoundOn,
+  pickMockReply,
+  pickMockRequest,
+  playChime,
+  saveSoundOn,
+  transitionCommState,
+  type CommState,
+  type CommStateEntry,
+} from "@/lib/board-comm-state";
 
 /** Prefer pointer position so empty columns and wide boards register drops reliably. */
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -131,6 +143,28 @@ export function Board({
     Record<string, "waiting" | "customer_replied" | "approved">
   >({});
 
+  // V2 preview (Hayk 2026-07-01): In-Progress card comm-state map.
+  // Cards stay in In Progress while designer waits on customer.
+  const [commEntries, setCommEntries] = useState<
+    Record<string, CommStateEntry>
+  >({});
+  const [soundOn, setSoundOn] = useState<boolean>(true);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  const [showHelp, setShowHelp] = useState<boolean>(false);
+  const renotifyTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // Load sound preference from localStorage on mount.
+  useEffect(() => {
+    setSoundOn(loadSoundOn());
+  }, []);
+
+  // Tick every 30s so time-on-job counter & waiting durations refresh.
+  useEffect(() => {
+    if (!v2Mode) return;
+    const id = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [v2Mode]);
+
   useEffect(() => {
     if (
       initialOrderId &&
@@ -168,6 +202,106 @@ export function Board({
     () => columns.find((c) => /customer\s*replied/i.test(c.name)) ?? null,
     [columns]
   );
+  const inProgressColumn = useMemo(
+    () => columns.find((c) => /in\s*progress/i.test(c.name)) ?? null,
+    [columns]
+  );
+
+  // Seed a default comm entry for every order that lives in In Progress.
+  // Runs whenever the set of In-Progress order ids changes.
+  useEffect(() => {
+    if (!v2Mode || !inProgressColumn) return;
+    setCommEntries((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const o of orders) {
+        if (o.column_id === inProgressColumn.id && !next[o.id]) {
+          next[o.id] = defaultCommEntry();
+          changed = true;
+        }
+      }
+      // Purge entries whose order left the column.
+      const inProgressIds = new Set(
+        orders
+          .filter((o) => o.column_id === inProgressColumn.id)
+          .map((o) => o.id)
+      );
+      for (const id of Object.keys(next)) {
+        if (!inProgressIds.has(id)) {
+          delete next[id];
+          changed = true;
+          const t = renotifyTimers.current[id];
+          if (t) {
+            clearTimeout(t);
+            delete renotifyTimers.current[id];
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [v2Mode, inProgressColumn, orders]);
+
+  // Cleanup all renotify timers on unmount.
+  useEffect(() => {
+    const timers = renotifyTimers.current;
+    return () => {
+      for (const t of Object.values(timers)) clearTimeout(t);
+    };
+  }, []);
+
+  function cycleCommState(orderId: string, next: CommState) {
+    setCommEntries((prev) => {
+      const current = prev[orderId] ?? defaultCommEntry();
+      const patch: Partial<
+        Pick<CommStateEntry, "requestedItems" | "replyPreview">
+      > = {};
+      if (next === "awaiting-customer") {
+        patch.requestedItems = pickMockRequest();
+        patch.replyPreview = undefined;
+      } else if (next === "customer-replied") {
+        patch.replyPreview = pickMockReply();
+      }
+      const updated = transitionCommState(current, next, patch);
+      // Chime + 30-min re-notify only when TRANSITIONING into replied.
+      if (next === "customer-replied" && current.state !== "customer-replied") {
+        if (soundOn) playChime();
+        const existing = renotifyTimers.current[orderId];
+        if (existing) clearTimeout(existing);
+        renotifyTimers.current[orderId] = setTimeout(
+          () => {
+            // Re-notify only if still in customer-replied state.
+            setCommEntries((p) => {
+              if (p[orderId]?.state === "customer-replied") {
+                if (soundOn) playChime();
+              }
+              return p;
+            });
+          },
+          30 * 60 * 1000
+        );
+      }
+      // Leaving customer-replied cancels the re-notify.
+      if (
+        current.state === "customer-replied" &&
+        next !== "customer-replied"
+      ) {
+        const t = renotifyTimers.current[orderId];
+        if (t) {
+          clearTimeout(t);
+          delete renotifyTimers.current[orderId];
+        }
+      }
+      return { ...prev, [orderId]: updated };
+    });
+  }
+
+  function toggleSound() {
+    setSoundOn((prev) => {
+      const next = !prev;
+      saveSoundOn(next);
+      return next;
+    });
+  }
 
   function flashPermissionError(message: string) {
     setPermissionError(message);
@@ -691,13 +825,28 @@ export function Board({
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold text-slate-800">Production Board</h1>
           {v2Mode ? (
-            <a
-              href="?"
-              className="inline-flex h-8 items-center gap-1 rounded-md border border-blue-300 bg-blue-50 px-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
-              title="Currently in preview mode. Click to return to the original modal."
-            >
-              🎨 Preview mode ON · click to exit
-            </a>
+            <>
+              <a
+                href="?"
+                className="inline-flex h-8 items-center gap-1 rounded-md border border-blue-300 bg-blue-50 px-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                title="Currently in preview mode. Click to return to the original modal."
+              >
+                🎨 Preview mode ON · click to exit
+              </a>
+              <button
+                type="button"
+                onClick={toggleSound}
+                className={cn(
+                  "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-xs font-semibold",
+                  soundOn
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    : "border-slate-300 bg-slate-50 text-slate-500 hover:bg-slate-100"
+                )}
+                title="Toggle chime on customer reply"
+              >
+                {soundOn ? "🔔 Sound on" : "🔕 Sound off"}
+              </button>
+            </>
           ) : (
             <a
               href="?v2=1"
@@ -766,6 +915,27 @@ export function Board({
         </div>
       </div>
 
+      {v2Mode ? (
+        <div className="mx-4 mb-2 flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <span className="mt-0.5 text-lg leading-none">🔔</span>
+          <div className="flex-1 leading-snug">
+            <span className="font-semibold">New: card comm states.</span>{" "}
+            Cards stay in In Progress while you wait on customer replies. Amber
+            pulse + chime = they replied. Grey = you&apos;re waiting. Click a
+            card to see the request thread.
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowHelp(true)}
+            className="ml-2 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-amber-300 bg-white text-xs font-bold text-amber-700 hover:bg-amber-100"
+            title="Explain the three card states"
+            aria-label="Explain card states"
+          >
+            ?
+          </button>
+        </div>
+      ) : null}
+
       {permissionError ? (
         <div className="mx-4 mb-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">
           {permissionError}
@@ -790,6 +960,10 @@ export function Board({
           <div className="flex h-full min-w-max gap-3 px-4 pb-4">
           {effectiveColumns.map((column, index) => {
             const isApproval = v2Mode && column.id === APPROVAL_COL_ID;
+            const isInProgress =
+              v2Mode &&
+              inProgressColumn !== null &&
+              column.id === inProgressColumn.id;
             return (
               <Column
                 key={column.id}
@@ -811,6 +985,9 @@ export function Board({
                   isApproval ? approvalStateByOrder : undefined
                 }
                 onSimulateReply={isApproval ? simulateCustomerReply : undefined}
+                commEntryByOrder={isInProgress ? commEntries : undefined}
+                nowTick={isInProgress ? nowTick : undefined}
+                onCycleCommState={isInProgress ? cycleCommState : undefined}
               />
             );
           })}
@@ -938,6 +1115,58 @@ export function Board({
           }}
           onClose={() => setMoveBlockedState(null)}
         />
+      ) : null}
+
+      {showHelp ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setShowHelp(false)}
+        >
+          <div
+            className="max-w-md rounded-lg bg-white p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-base font-semibold text-slate-800">
+                In-Progress card states
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowHelp(false)}
+                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-3 text-sm leading-snug text-slate-700">
+              <p>
+                <span className="font-semibold text-slate-800">Active.</span>{" "}
+                Designer is working. Normal card. Time-on-job timer runs.
+              </p>
+              <p>
+                <span className="font-semibold text-slate-800">
+                  Awaiting customer.
+                </span>{" "}
+                Designer sent a missing-info request. Card is dimmed and shows{" "}
+                <span className="whitespace-nowrap">⏳ Waiting …</span> plus what
+                was requested. Timer paused.
+              </p>
+              <p>
+                <span className="font-semibold text-slate-800">
+                  Customer replied.
+                </span>{" "}
+                Amber pulse + a chime. Shows the reply preview and{" "}
+                <span className="whitespace-nowrap">🔔 Replied …</span>. If left
+                unopened for 30 minutes, the chime replays. Timer paused.
+              </p>
+              <p className="text-xs text-slate-500">
+                Sound: use the header toggle. Preference is saved in your
+                browser.
+              </p>
+            </div>
+          </div>
+        </div>
       ) : null}
 
     </div>
