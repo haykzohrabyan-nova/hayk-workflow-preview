@@ -506,8 +506,11 @@ export function CardDetailModal({
     const match = t.match(/-(\d{3,4})(?:-\d+)?$/) || t.match(/(\d{3,4})/);
     return match ? `#${match[1]}` : t || "#…";
   })();
-  const ownerDisplay =
-    owners.find((o) => o.id === ownerId)?.name ?? "Unassigned";
+  // Hayk 2026-07-02 — Change #6: short SR / SDR role prefix on the owner name.
+  // All order owners are `account_manager` role in DB → they're all Sales Reps
+  // ("SR") from Bazaar's ops vocabulary. If no owner assigned, drop the prefix.
+  const ownerNameOnly = owners.find((o) => o.id === ownerId)?.name ?? "";
+  const ownerDisplay = ownerNameOnly ? `SR ${ownerNameOnly}` : "Unassigned";
   const dueDisplay = (() => {
     if (!dueDate) return "—";
     const d = new Date(dueDate);
