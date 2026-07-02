@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   DndContext,
   DragOverlay,
@@ -21,6 +21,7 @@ import { Column } from "./column";
 import { OrderCard } from "./order-card";
 import { CreateOrderModal } from "./create-order-modal";
 import { CardDetailModal } from "./card-detail-modal";
+import { PreviewOrderModalV2 } from "./preview-order-modal-v2";
 import { MoveBlockedModal } from "./move-blocked-modal";
 import { Input, Select } from "@/components/ui/input";
 import { type NotifyColumnConfig } from "@/lib/board-notify";
@@ -102,6 +103,8 @@ export function Board({
   appUrl,
 }: BoardProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const v2Mode = searchParams?.get("v2") === "1";
   const [orders, setOrders] = useState<OrderWithRelations[]>(initialOrders);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [createColumn, setCreateColumn] = useState<string | null>(null);
@@ -120,6 +123,13 @@ export function Board({
     orderId: string;
     missingFields: MissingField[];
   } | null>(null);
+
+  // V2 preview: client-side approval state overrides. Keyed by order id.
+  // "waiting" | "customer_replied" | "approved". Real backend integration
+  // (SMS/email webhook) would replace this map.
+  const [approvalOverrides, setApprovalOverrides] = useState<
+    Record<string, "waiting" | "customer_replied" | "approved">
+  >({});
 
   useEffect(() => {
     if (
@@ -147,6 +157,17 @@ export function Board({
     for (const c of columns) map.set(c.id, c);
     return map;
   }, [columns]);
+
+  // V2 preview: identify the two columns we're hiding + replacing.
+  const APPROVAL_COL_ID = "__v2_customer_approval__";
+  const missingInfoColumn = useMemo(
+    () => columns.find((c) => /missing\s*info/i.test(c.name)) ?? null,
+    [columns]
+  );
+  const customerRepliedColumn = useMemo(
+    () => columns.find((c) => /customer\s*replied/i.test(c.name)) ?? null,
+    [columns]
+  );
 
   function flashPermissionError(message: string) {
     setPermissionError(message);
@@ -337,14 +358,178 @@ export function Board({
   const ordersByColumn = useMemo(() => {
     const map = new Map<string, OrderWithRelations[]>();
     for (const col of columns) map.set(col.id, []);
+    if (v2Mode) map.set(APPROVAL_COL_ID, []);
     for (const order of [...filteredOrders].sort(
       (a, b) => a.position - b.position
     )) {
+      if (
+        v2Mode &&
+        (order.column_id === missingInfoColumn?.id ||
+          order.column_id === customerRepliedColumn?.id ||
+          approvalOverrides[order.id] === "waiting" ||
+          approvalOverrides[order.id] === "customer_replied")
+      ) {
+        map.get(APPROVAL_COL_ID)!.push(order);
+        continue;
+      }
       if (!map.has(order.column_id)) map.set(order.column_id, []);
       map.get(order.column_id)!.push(order);
     }
     return map;
-  }, [filteredOrders, columns]);
+  }, [
+    filteredOrders,
+    columns,
+    v2Mode,
+    missingInfoColumn,
+    customerRepliedColumn,
+    approvalOverrides,
+  ]);
+
+  // ─── V2 preview: Customer Approval column synthesis ─────────────────
+  // Replace "Missing Info" + "Customer Replied" real columns with one
+  // synthetic "Customer Approval" column at Missing Info's position.
+  const hiddenColumnIds = useMemo(() => {
+    const s = new Set<string>();
+    if (missingInfoColumn) s.add(missingInfoColumn.id);
+    if (customerRepliedColumn) s.add(customerRepliedColumn.id);
+    return s;
+  }, [missingInfoColumn, customerRepliedColumn]);
+
+  const v2Columns: BoardColumn[] = useMemo(() => {
+    if (!v2Mode) return columns;
+    const approvalColumn: BoardColumn = {
+      id: APPROVAL_COL_ID,
+      tenant_id: tenantId,
+      name: "Customer Approval",
+      position: missingInfoColumn?.position ?? 0,
+      kind: missingInfoColumn?.kind ?? "normal",
+      color: "#f59e0b",
+      image_url: null,
+      drop_in_roles: missingInfoColumn?.drop_in_roles ?? null,
+      drop_out_roles: missingInfoColumn?.drop_out_roles ?? null,
+      visible_to_roles: [],
+      visible_to_users: [],
+      visibility_mode: "all",
+      visibility_roles: [],
+      visibility_users_v2: [],
+    };
+    const withoutHidden = columns.filter((c) => !hiddenColumnIds.has(c.id));
+    // Insert approval column at Missing Info's original position slot.
+    const anchorIndex = missingInfoColumn
+      ? Math.min(
+          withoutHidden.length,
+          Math.max(
+            0,
+            columns
+              .filter((c) => c.id !== customerRepliedColumn?.id)
+              .findIndex((c) => c.id === missingInfoColumn.id)
+          )
+        )
+      : 0;
+    const out = [...withoutHidden];
+    out.splice(anchorIndex, 0, approvalColumn);
+    return out;
+  }, [
+    v2Mode,
+    columns,
+    missingInfoColumn,
+    customerRepliedColumn,
+    hiddenColumnIds,
+    tenantId,
+  ]);
+
+  const effectiveColumns = v2Mode ? v2Columns : columns;
+
+  // Approval state map: real column membership + specs override + client override.
+  const approvalStateByOrder = useMemo(() => {
+    const map: Record<string, "waiting" | "customer_replied" | "approved"> = {};
+    if (!v2Mode) return map;
+    for (const o of orders) {
+      const specState = (o.specs as Record<string, unknown> | undefined)
+        ?.approval_state as string | undefined;
+      const override = approvalOverrides[o.id];
+      let state: "waiting" | "customer_replied" | "approved" | null = null;
+      if (override) state = override;
+      else if (
+        specState === "waiting" ||
+        specState === "customer_replied" ||
+        specState === "approved"
+      ) {
+        state = specState;
+      } else if (o.column_id === missingInfoColumn?.id) state = "waiting";
+      else if (o.column_id === customerRepliedColumn?.id)
+        state = "customer_replied";
+      if (state) map[o.id] = state;
+    }
+    return map;
+  }, [
+    v2Mode,
+    orders,
+    approvalOverrides,
+    missingInfoColumn,
+    customerRepliedColumn,
+  ]);
+
+  function simulateCustomerReply() {
+    const waitingIds = Object.entries(approvalStateByOrder)
+      .filter(([, s]) => s === "waiting")
+      .map(([id]) => id);
+    if (waitingIds.length === 0) {
+      flashToast("No waiting cards to simulate a reply on");
+      return;
+    }
+    const pick = waitingIds[Math.floor(Math.random() * waitingIds.length)];
+    setApprovalOverrides((prev) => ({ ...prev, [pick]: "customer_replied" }));
+    // Bump updated_at so it sorts to top by newest.
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === pick ? { ...o, updated_at: new Date().toISOString() } : o
+      )
+    );
+    flashToast("Simulated customer reply — card flipped to red");
+  }
+
+  async function markCustomerApproved(orderId: string) {
+    // Find the "next" real column after the approval column position.
+    const approvalIndex = effectiveColumns.findIndex(
+      (c) => c.id === APPROVAL_COL_ID
+    );
+    const nextColumn = effectiveColumns
+      .slice(approvalIndex + 1)
+      .find((c) => c.id !== APPROVAL_COL_ID);
+    if (!nextColumn) {
+      flashPermissionError("No next column found to move approved order into.");
+      return;
+    }
+    setApprovalOverrides((prev) => ({ ...prev, [orderId]: "approved" }));
+    // Assign a position at the end of the target column.
+    const targetOrders = orders
+      .filter((o) => o.column_id === nextColumn.id)
+      .sort((a, b) => a.position - b.position);
+    const lastPos = targetOrders[targetOrders.length - 1]?.position ?? 0;
+    const newPos = lastPos + 1000;
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === orderId
+          ? { ...o, column_id: nextColumn.id, position: newPos }
+          : o
+      )
+    );
+    try {
+      const result = await requestOrderMove(
+        { orderId, toColumnId: nextColumn.id, position: newPos },
+        { fromColumnId: null, columns }
+      );
+      if (!result.ok) {
+        flashPermissionError(result.error ?? "Move rejected");
+        setOrders(initialOrders);
+      } else {
+        flashToast(`Customer approved · moved to ${nextColumn.name}`);
+      }
+    } catch {
+      flashPermissionError("Failed to persist move");
+    }
+  }
 
   const activeOrder = orders.find((o) => o.id === activeId) ?? null;
   function findColumnId(id: string): string | null {
@@ -503,7 +688,26 @@ export function Board({
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <h1 className="text-lg font-semibold text-slate-800">Production Board</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-semibold text-slate-800">Production Board</h1>
+          {v2Mode ? (
+            <a
+              href="?"
+              className="inline-flex h-8 items-center gap-1 rounded-md border border-blue-300 bg-blue-50 px-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+              title="Currently in preview mode. Click to return to the original modal."
+            >
+              🎨 Preview mode ON · click to exit
+            </a>
+          ) : (
+            <a
+              href="?v2=1"
+              className="inline-flex h-8 items-center gap-1 rounded-md border border-orange-300 bg-orange-50 px-2.5 text-xs font-semibold text-orange-700 hover:bg-orange-100"
+              title="Click cards with the new modal design"
+            >
+              🎨 Try new modal
+            </a>
+          )}
+        </div>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           <div className="relative min-w-[10rem] flex-1 sm:w-56 sm:flex-none">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -584,25 +788,32 @@ export function Board({
       >
         <div className="board-scroll min-h-0 min-w-0 flex-1 overflow-x-scroll overflow-y-hidden">
           <div className="flex h-full min-w-max gap-3 px-4 pb-4">
-          {columns.map((column, index) => (
-            <Column
-              key={column.id}
-              column={column}
-              canDragCards={canDragInColumn(role, column)}
-              canAcceptDrop={canDropIn(role, column)}
-              isDragActive={activeId !== null}
-              orders={ordersByColumn.get(column.id) ?? []}
-              customFields={customFields}
-              fieldValuesByOrder={fieldValuesByOrder}
-              thumbnailByOrder={thumbnailByOrder}
-              designerNameByOrder={designerNameByOrder}
-              notificationBadgeByOrder={notificationBadgeByOrder}
-              ownerNameByOrder={ownerNameByOrder}
-              isFirst={index === 0}
-              onOpenOrder={(o) => setDetailId(o.id)}
-              onAdd={(colId) => setCreateColumn(colId)}
-            />
-          ))}
+          {effectiveColumns.map((column, index) => {
+            const isApproval = v2Mode && column.id === APPROVAL_COL_ID;
+            return (
+              <Column
+                key={column.id}
+                column={column}
+                canDragCards={canDragInColumn(role, column)}
+                canAcceptDrop={canDropIn(role, column)}
+                isDragActive={activeId !== null}
+                orders={ordersByColumn.get(column.id) ?? []}
+                customFields={customFields}
+                fieldValuesByOrder={fieldValuesByOrder}
+                thumbnailByOrder={thumbnailByOrder}
+                designerNameByOrder={designerNameByOrder}
+                notificationBadgeByOrder={notificationBadgeByOrder}
+                ownerNameByOrder={ownerNameByOrder}
+                isFirst={index === 0}
+                onOpenOrder={(o) => setDetailId(o.id)}
+                onAdd={(colId) => setCreateColumn(colId)}
+                approvalStateByOrder={
+                  isApproval ? approvalStateByOrder : undefined
+                }
+                onSimulateReply={isApproval ? simulateCustomerReply : undefined}
+              />
+            );
+          })}
           </div>
         </div>
 
@@ -637,9 +848,46 @@ export function Board({
         }}
       />
 
+      {/* V2 preview modal — only when ?v2=1 in URL. Otherwise original CardDetailModal. */}
+      {v2Mode && detailId !== null ? (() => {
+        const o = orders.find(x => x.id === detailId);
+        if (!o) return null;
+        const specs = (o.specs || {}) as Record<string, unknown>;
+        const size = (specs.size as Record<string, unknown> | undefined) || {};
+        return (
+          <PreviewOrderModalV2
+            open={true}
+            onClose={closeOrderDetail}
+            order={{
+              refId: o.title || o.id.slice(0, 6),
+              fullRef: `ORD-${o.title || o.id.slice(0, 6)}`,
+              customerName: (specs.customer_name as string) || (specs.customerName as string) || "Customer",
+              customerEmail: (specs.customer_email as string) || "",
+              customerPhone: (specs.customer_phone as string) || "",
+              dueDate: o.due_date || undefined,
+              priority: o.priority === "urgent" ? "Rush" : o.priority === "high" ? "Critical" : "Normal",
+              productName: (specs.product as string) || undefined,
+              materialLabel: (specs.material as string) || undefined,
+              finishedSize: (size.label as string) || undefined,
+              colorMode: (specs.color_mode as string) || undefined,
+              laminationLabel: (specs.lamination as string) || undefined,
+              finishLabel: undefined,
+              skuCount: Array.isArray(specs.skus) ? (specs.skus as unknown[]).length : 1,
+              quantity: (specs.quantity as number) || 0,
+              notes: o.description || "",
+            }}
+            approvalState={approvalStateByOrder[o.id] ?? null}
+            onMarkApproved={() => {
+              void markCustomerApproved(o.id);
+              closeOrderDetail();
+            }}
+          />
+        );
+      })() : null}
+
       <CardDetailModal
-        orderId={detailId}
-        open={detailId !== null}
+        orderId={v2Mode ? null : detailId}
+        open={!v2Mode && detailId !== null}
         onClose={closeOrderDetail}
         customFields={customFields}
         owners={owners}

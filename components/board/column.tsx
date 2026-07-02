@@ -37,6 +37,10 @@ interface ColumnProps {
   isFirst: boolean;
   onOpenOrder: (order: OrderWithRelations) => void;
   onAdd: (columnId: string) => void;
+  /** V2 preview: when this is the synthetic approval column, per-order state map. */
+  approvalStateByOrder?: Record<string, "waiting" | "customer_replied" | "approved">;
+  /** V2 preview: dev-only button to flip a random waiting card to customer_replied. */
+  onSimulateReply?: () => void;
 }
 
 /** Short label of which roles a drop permission applies to. */
@@ -64,6 +68,8 @@ export function Column({
   isFirst,
   onOpenOrder,
   onAdd,
+  approvalStateByOrder,
+  onSimulateReply,
 }: ColumnProps) {
   const [dateSort, setDateSort] = useState<DateSort>("default");
 
@@ -75,8 +81,23 @@ export function Column({
 
   const showDropTarget = isDragActive && isOver && canAcceptDrop;
 
-  const sortedOrders =
-    dateSort === "default"
+  const isApprovalColumn = !!approvalStateByOrder;
+
+  const sortedOrders = isApprovalColumn
+    ? [...orders].sort((a, b) => {
+        const sa = approvalStateByOrder![a.id] ?? "waiting";
+        const sb = approvalStateByOrder![b.id] ?? "waiting";
+        const rank = (s: string) =>
+          s === "customer_replied" ? 0 : s === "waiting" ? 1 : 2;
+        const ra = rank(sa);
+        const rb = rank(sb);
+        if (ra !== rb) return ra - rb;
+        // Within same bucket: newest first.
+        const ta = new Date(a.updated_at || a.created_at).getTime();
+        const tb = new Date(b.updated_at || b.created_at).getTime();
+        return tb - ta;
+      })
+    : dateSort === "default"
       ? orders
       : [...orders].sort((a, b) => {
           const ta = new Date(a.created_at).getTime();
@@ -191,6 +212,16 @@ export function Column({
           showDropTarget ? "bg-blue-50" : "bg-slate-100/40"
         )}
       >
+        {isApprovalColumn && onSimulateReply ? (
+          <button
+            type="button"
+            onClick={onSimulateReply}
+            className="mb-1 inline-flex items-center justify-center gap-1 rounded-md border border-dashed border-purple-300 bg-purple-50 px-2 py-1 text-[11px] font-semibold text-purple-700 hover:bg-purple-100"
+            title="Dev only: pick a random waiting card and flip it to customer_replied"
+          >
+            🎲 Simulate customer reply
+          </button>
+        ) : null}
         <SortableContext
           items={sortedOrders.map((o) => o.id)}
           strategy={verticalListSortingStrategy}
@@ -207,6 +238,11 @@ export function Column({
               notificationBadge={notificationBadgeByOrder[order.id]}
               ownerName={ownerNameByOrder[order.id]}
               onOpen={onOpenOrder}
+              approvalState={
+                isApprovalColumn
+                  ? (approvalStateByOrder![order.id] ?? "waiting")
+                  : null
+              }
             />
           ))}
         </SortableContext>

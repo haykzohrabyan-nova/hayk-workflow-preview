@@ -49,6 +49,8 @@ interface OrderCardProps {
   notificationBadge?: CardNotificationBadge;
   ownerName?: string;
   onOpen: (order: OrderWithRelations) => void;
+  /** V2 preview mode — approval column state indicator. */
+  approvalState?: "waiting" | "customer_replied" | "approved" | null;
 }
 
 export function OrderCard({
@@ -61,6 +63,7 @@ export function OrderCard({
   notificationBadge,
   ownerName,
   onOpen,
+  approvalState = null,
 }: OrderCardProps) {
   const {
     attributes,
@@ -161,11 +164,73 @@ export function OrderCard({
     );
   }
 
+  // Hayk 2026-06-30 — always render the same three slots so every card has
+  // identical visual rhythm regardless of how much data the order has.
   const summaryTrailingParts = [
-    productName || null,
-    orderQty != null ? `qty ${orderQty}` : null,
-    skuCount > 0 ? `${skuCount} SKU` : null,
-  ].filter(Boolean);
+    productName || "—",
+    `qty ${orderQty != null ? orderQty : "—"}`,
+    `${skuCount || 0} SKU`,
+  ];
+
+  // Hayk 2026-06-30 — short order ref like "#035" parsed out of full title.
+  const shortOrderRef = (() => {
+    const t = (order.title || "").trim();
+    const match = t.match(/-(\d{3,4})(?:-\d+)?$/) || t.match(/(\d{3,4})/);
+    return match ? `#${match[1]}` : t || "#…";
+  })();
+
+  // Stable color for the designer chip (hash → palette).
+  const designerColor = (() => {
+    if (!designerName) return null;
+    const palette = [
+      "bg-violet-100 text-violet-700 border-violet-200",
+      "bg-sky-100 text-sky-700 border-sky-200",
+      "bg-emerald-100 text-emerald-700 border-emerald-200",
+      "bg-amber-100 text-amber-700 border-amber-200",
+      "bg-rose-100 text-rose-700 border-rose-200",
+      "bg-indigo-100 text-indigo-700 border-indigo-200",
+      "bg-teal-100 text-teal-700 border-teal-200",
+      "bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200",
+    ];
+    let hash = 0;
+    for (let i = 0; i < designerName.length; i++) {
+      hash = (hash * 31 + designerName.charCodeAt(i)) >>> 0;
+    }
+    return palette[hash % palette.length];
+  })();
+
+  // Hayk 2026-06-30 — stock fallback so layout is visible until SKU artwork
+  // is uploaded on real orders. Real thumbnail (from sku_images) wins.
+  const STOCK_FALLBACK_THUMB =
+    "https://api.bazaarprinting.com/api/local-file/products%2Fdhkns6f31o9yvd82_v-mini-tuck-end-box.png";
+  const [thumbBroken, setThumbBroken] = useState(false);
+  const effectiveThumb =
+    thumbnail && !thumbBroken ? thumbnail : STOCK_FALLBACK_THUMB;
+
+  // V2 approval-column visual state — left border tint + top pill.
+  const approvalBorder =
+    approvalState === "waiting"
+      ? "border-l-4 border-l-amber-400"
+      : approvalState === "customer_replied"
+        ? "border-l-4 border-l-red-500"
+        : approvalState === "approved"
+          ? "border-l-4 border-l-emerald-500"
+          : "";
+
+  const approvalPill =
+    approvalState === "waiting" ? (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 ring-1 ring-amber-200">
+        ⏳ Waiting on customer
+      </span>
+    ) : approvalState === "customer_replied" ? (
+      <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700 ring-1 ring-red-300">
+        💬 New message · click to review
+      </span>
+    ) : approvalState === "approved" ? (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+        ✅ Customer approved · ready for production
+      </span>
+    ) : null;
 
   return (
     <div
@@ -175,104 +240,169 @@ export function OrderCard({
       {...(canDrag ? listeners : {})}
       onClick={() => onOpen(order)}
       className={cn(
-        "group rounded-md border shadow-sm transition-shadow hover:shadow-md",
+        "group rounded-lg border bg-white shadow-sm transition-all hover:shadow-md hover:border-slate-300",
         isDesignerUnassigned
           ? UNASSIGNED_DESIGNER_CARD_CLASS
-          : "border-slate-200 bg-white",
-        expanded ? "p-2.5" : "p-2",
+          : "border-slate-200",
+        approvalBorder,
+        "p-2.5",
         canDrag ? "cursor-pointer" : "cursor-default"
       )}
     >
-      <div className="flex items-start gap-2">
-        {thumbnail ? (
-          <Image
-            src={thumbnail}
-            alt=""
-            width={40}
-            height={40}
-            className="h-10 w-10 shrink-0 rounded object-cover"
-            unoptimized
-          />
+    {approvalPill ? (
+      <div className="mb-2 flex items-center">{approvalPill}</div>
+    ) : null}
+    <div className="flex gap-3">
+      {/* Thumbnail — left, 56×56 */}
+      <Image
+        src={effectiveThumb}
+        alt=""
+        width={56}
+        height={56}
+        className="h-14 w-14 shrink-0 rounded-md object-cover ring-1 ring-slate-100"
+        unoptimized
+        onError={() => setThumbBroken(true)}
+      />
+
+    <div className="min-w-0 flex-1">
+      {/* Top row — # left, customer right */}
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={(e) => copyText(e, order.title, "order")}
+          onPointerDown={(e) => e.stopPropagation()}
+          title={`Copy ${order.title}`}
+          className="group/copy inline-flex items-center gap-1 text-sm font-bold leading-none text-slate-900 hover:text-[var(--primary)]"
+        >
+          <span>{shortOrderRef}</span>
+          {copied === "order" ? (
+            <span className="text-[10px] font-normal text-emerald-600">
+              Copied
+            </span>
+          ) : (
+            <Copy className="h-3 w-3 text-slate-300 opacity-0 transition-opacity group-hover/copy:opacity-100" />
+          )}
+        </button>
+
+        {displayCustomerName ? (
+          <button
+            type="button"
+            onClick={(e) => copyText(e, displayCustomerName, "customer-name")}
+            onPointerDown={(e) => e.stopPropagation()}
+            title="Copy customer name"
+            className="min-w-0 truncate text-right text-sm font-semibold text-slate-700 hover:text-[var(--primary)]"
+          >
+            {copied === "customer-name" ? "Copied" : displayCustomerName}
+          </button>
         ) : null}
+      </div>
 
-        <div className="min-w-0 flex-1">
-          {/* Compact header — always visible */}
-          <div className="flex items-start gap-1">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between gap-1">
-                <button
-                  type="button"
-                  onClick={(e) => copyText(e, order.title, "order")}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  title="Copy order number"
-                  className="group/copy flex min-w-0 items-center gap-0.5 text-left text-xs font-semibold leading-tight text-slate-800 hover:text-[var(--primary)]"
-                >
-                  <span className="truncate">{order.title}</span>
-                  {copied === "order" ? (
-                    <span className="shrink-0 text-[10px] font-normal text-slate-400">
-                      Copied
-                    </span>
-                  ) : (
-                    <Copy className="h-2.5 w-2.5 shrink-0 opacity-0 transition-opacity group-hover/copy:opacity-100" />
-                  )}
-                </button>
-                {order.due_date ? (
-                  <span
-                    className="inline-flex shrink-0 items-center gap-0.5 text-[10px] font-medium text-slate-500"
-                    title={`Due ${formatDate(order.due_date)}`}
-                  >
-                    <CalendarClock className="h-2.5 w-2.5" />
-                    {formatDateShort(order.due_date)}
-                  </span>
-                ) : null}
-              </div>
+      {/* Middle row — product summary */}
+      {summaryTrailingParts.length > 0 ? (
+        <div className="mt-1.5 truncate text-[11px] leading-snug text-slate-500">
+          {summaryTrailingParts.join("  ·  ")}
+        </div>
+      ) : null}
 
-              {(displayCustomerName || summaryTrailingParts.length > 0) ? (
-                <p className="mt-0.5 flex min-w-0 items-center truncate text-[11px] leading-tight text-slate-500">
-                  {displayCustomerName ? (
-                    <button
-                      type="button"
-                      onClick={(e) => copyText(e, displayCustomerName, "customer-name")}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      title="Copy customer name"
-                      className="group/copy inline-flex max-w-full shrink-0 items-center gap-0.5 text-left font-medium text-slate-600 hover:text-[var(--primary)]"
-                    >
-                      <span className="truncate">
-                        {copied === "customer-name" ? "Copied!" : displayCustomerName}
-                      </span>
-                      {copied === "customer-name" ? null : (
-                        <Copy className="h-2.5 w-2.5 shrink-0 opacity-0 transition-opacity group-hover/copy:opacity-100" />
-                      )}
-                    </button>
-                  ) : null}
-                  {displayCustomerName && summaryTrailingParts.length > 0 ? (
-                    <span className="shrink-0">&nbsp;·&nbsp;{summaryTrailingParts.join(" · ")}</span>
-                  ) : summaryTrailingParts.length > 0 ? (
-                    summaryTrailingParts.join(" · ")
-                  ) : null}
-                </p>
-              ) : null}
-            </div>
-
-            <button
-              type="button"
-              onClick={toggleExpanded}
-              onPointerDown={(e) => e.stopPropagation()}
-              title={expanded ? "Show less" : "Show more"}
-              aria-expanded={expanded}
-              className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-            >
-              {expanded ? (
-                <ChevronUp className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronDown className="h-3.5 w-3.5" />
+      {/* Bottom row — designer chip · due date · priority · chevron */}
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          {designerName && designerColor ? (
+            <span
+              className={cn(
+                "inline-flex max-w-[140px] items-center gap-1 truncate rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                designerColor
               )}
-            </button>
-          </div>
+              title={`Designer: ${designerName}`}
+            >
+              <span className="truncate">{designerName}</span>
+            </span>
+          ) : (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700",
+              )}
+              title="Designer unassigned"
+            >
+              <User className="h-2.5 w-2.5" />
+              Unassigned
+            </span>
+          )}
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1 text-[10px] font-medium",
+              order.due_date ? "text-slate-500" : "text-slate-300"
+            )}
+            title={order.due_date ? `Due ${formatDate(order.due_date)}` : "No due date"}
+          >
+            <CalendarClock className="h-3 w-3" />
+            {order.due_date ? formatDateShort(order.due_date) : "No due date"}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {order.priority !== "normal" ? (
+            <Badge
+              className={cn(
+                PRIORITY_STYLES[order.priority],
+                "h-5 px-1.5 text-[10px]"
+              )}
+            >
+              {order.priority}
+            </Badge>
+          ) : null}
+          <button
+            type="button"
+            onClick={toggleExpanded}
+            onPointerDown={(e) => e.stopPropagation()}
+            title={expanded ? "Show less" : "Show more"}
+            aria-expanded={expanded}
+            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          >
+            {expanded ? (
+              <ChevronUp className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5" />
+            )}
+          </button>
+        </div>
+      </div>
 
-          {/* Footer — always visible */}
-          <div className="mt-1 flex items-center justify-between gap-1.5">
-            <div className="flex min-w-0 items-center gap-1.5 truncate">
+      {/* Expanded — order specs + status badges (customer is in the header) */}
+      {expanded ? (
+        <div
+          className="mt-2.5 space-y-2 rounded-md bg-slate-50 p-2.5"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+            Order specs
+          </div>
+          {specFields.length > 0 ? (
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] leading-snug">
+              {specFields.map(({ field, label, display }) => (
+                <div key={field.id} className="min-w-0">
+                  <span className="text-slate-400">{label}: </span>
+                  <span className="truncate font-medium text-slate-700">
+                    {display}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {orderQty != null ? (
+              <span className="inline-flex items-center rounded-md bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700 ring-1 ring-slate-200">
+                qty {orderQty}
+              </span>
+            ) : null}
+            {skuCount > 0 ? (
+              <span className="inline-flex items-center rounded-md bg-white px-2 py-0.5 text-[10px] font-medium text-[#1e40af] ring-1 ring-blue-200">
+                SKU: {skuCount}
+              </span>
+            ) : null}
+          </div>
+          {(order.category || notificationBadge || orderTags.length > 0) ? (
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-200 pt-2">
               {order.category ? (
                 <span
                   className="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium text-white"
@@ -303,135 +433,12 @@ export function OrderCard({
                   {tag}
                 </span>
               ))}
-              <span
-                className={cn(
-                  "inline-flex min-w-0 items-center gap-0.5 truncate text-[10px]",
-                  isDesignerUnassigned
-                    ? UNASSIGNED_DESIGNER_TEXT_CLASS
-                    : "text-slate-500"
-                )}
-                title="Assigned designer"
-              >
-                <User
-                  className={cn(
-                    "h-2.5 w-2.5 shrink-0",
-                    isDesignerUnassigned
-                      ? "text-amber-600"
-                      : "text-[var(--primary)]"
-                  )}
-                />
-                <span className="truncate">{designerName ?? "Unassigned"}</span>
-              </span>
-            </div>
-            <Badge
-              className={cn(
-                PRIORITY_STYLES[order.priority],
-                "h-5 shrink-0 px-1.5 text-[10px]"
-              )}
-            >
-              {order.priority}
-            </Badge>
-          </div>
-
-          {/* Expanded details */}
-          {expanded ? (
-            <div
-              className="mt-2 space-y-2 border-t border-slate-100 pt-2"
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] leading-snug">
-                <div className="min-w-0">
-                  <span className="text-slate-400">Assigned: </span>
-                  <span
-                    className={cn(
-                      "inline-flex items-center gap-0.5 font-medium",
-                      isDesignerUnassigned
-                        ? UNASSIGNED_DESIGNER_TEXT_CLASS
-                        : "text-slate-700"
-                    )}
-                  >
-                    <User
-                      className={cn(
-                        "h-2.5 w-2.5 shrink-0",
-                        isDesignerUnassigned
-                          ? "text-amber-600"
-                          : "text-[var(--primary)]"
-                      )}
-                    />
-                    <span className="truncate">
-                      {designerName ?? "Unassigned"}
-                    </span>
-                  </span>
-                </div>
-                <div className="min-w-0">
-                  <span className="text-slate-400">Owner: </span>
-                  <span className="font-medium text-slate-700">
-                    {ownerName ?? "—"}
-                  </span>
-                </div>
-              </div>
-
-              {displayCustomerName || email || phone ? (
-                <div className="space-y-0.5">
-                  {displayCustomerName ? (
-                    <div className="flex items-center gap-1">
-                      <User className="h-3 w-3 shrink-0 text-slate-400" />
-                      <CopyableText
-                        text={displayCustomerName}
-                        copyKey="customer-name-exp"
-                        title="Copy customer name"
-                      />
-                    </div>
-                  ) : null}
-                  {email ? (
-                    <CopyableText
-                      text={email}
-                      copyKey="contact-email"
-                      title="Copy email"
-                      className={displayCustomerName ? "ml-4" : undefined}
-                    />
-                  ) : null}
-                  {phone ? (
-                    <CopyableText
-                      text={phone}
-                      copyKey="contact-phone"
-                      title="Copy phone"
-                      className={displayCustomerName ? "ml-4" : undefined}
-                    />
-                  ) : null}
-                </div>
-              ) : null}
-
-              {specFields.length > 0 || orderQty != null || skuCount > 0 ? (
-                <div className="flex flex-wrap gap-1">
-                  {specFields.map(({ field, label, display }) => (
-                    <span
-                      key={field.id}
-                      className="inline-flex max-w-full items-center gap-0.5 rounded bg-slate-100 px-1 py-px text-[10px] text-slate-600"
-                    >
-                      <span className="shrink-0 font-medium text-slate-500">
-                        {label}:
-                      </span>
-                      <span className="truncate">{display}</span>
-                    </span>
-                  ))}
-                  {orderQty != null ? (
-                    <span className="inline-flex items-center rounded bg-slate-100 px-1 py-px text-[10px] text-slate-600">
-                      qty {orderQty}
-                    </span>
-                  ) : null}
-                  {skuCount > 0 ? (
-                    <span className="inline-flex items-center rounded border border-blue-200/80 bg-[#dbeafe] px-1 py-px text-[10px] text-[#1e40af]">
-                      SKU: {skuCount}
-                    </span>
-                  ) : null}
-                </div>
-              ) : null}
             </div>
           ) : null}
         </div>
-      </div>
+      ) : null}
+    </div>
+    </div>
     </div>
   );
 }

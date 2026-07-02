@@ -162,6 +162,8 @@ export function CardDetailModal({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [customerPopoverOpen, setCustomerPopoverOpen] = useState(false);
+  const [copiedField, setCopiedField] = useState<"phone" | "email" | null>(null);
   const [orderNumberCopied, setOrderNumberCopied] = useState(false);
   const [persistedSkuIds, setPersistedSkuIds] = useState<Set<string>>(
     () => new Set()
@@ -494,33 +496,171 @@ export function CardDetailModal({
     }
   }
 
+  // Hayk redesign 2026-06-30 — compact header:
+  //   #035  ·  Account Manager: Marianna  ·  Due: Jun 18  ·  [Priority tag]
+  // Short # = the 3-digit serial parsed out of the full title (e.g. ORD-2026-035-1 → 035).
+  // The full title is still in the DB; copy-to-clipboard reveals it.
+  const shortOrderRef = (() => {
+    const t = displayOrderNumber || "";
+    // Try to find a 3-4 digit serial in patterns like ORD-2026-035-1 or 035-1
+    const match = t.match(/-(\d{3,4})(?:-\d+)?$/) || t.match(/(\d{3,4})/);
+    return match ? `#${match[1]}` : t || "#…";
+  })();
+  const ownerDisplay =
+    owners.find((o) => o.id === ownerId)?.name ?? "Unassigned";
+  const dueDisplay = (() => {
+    if (!dueDate) return "—";
+    const d = new Date(dueDate);
+    if (Number.isNaN(d.getTime())) return dueDate;
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  })();
+  const priorityLabel =
+    PRIORITY_STYLES[priority as keyof typeof PRIORITY_STYLES]?.label ?? priority;
+  const isRush = priority === "rush" || priority === "urgent" || priority === "high";
+
   const modalTitle = (
-    <span className="flex min-w-0 items-center gap-2">
-      <span className="truncate">
-        {isViewOnly ? "View order" : "Order Details"}
-        {displayOrderNumber ? `: ${displayOrderNumber}` : loading ? ": …" : ""}
-      </span>
-      {displayOrderNumber ? (
-        <button
-          type="button"
-          onClick={copyOrderNumber}
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-normal transition-colors",
-            orderNumberCopied
-              ? "text-emerald-600"
-              : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-          )}
-          title="Copy order number"
-          aria-label="Copy order number"
-        >
-          {orderNumberCopied ? (
-            "Copied"
-          ) : (
-            <Copy className="h-3.5 w-3.5" aria-hidden />
-          )}
-        </button>
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+      <button
+        type="button"
+        onClick={copyOrderNumber}
+        className={cn(
+          "inline-flex items-center gap-1 font-semibold text-slate-900",
+          orderNumberCopied ? "text-emerald-600" : "hover:text-slate-700"
+        )}
+        title={`Copy ${displayOrderNumber || "order number"}`}
+      >
+        <span className="text-base">{shortOrderRef}</span>
+        {orderNumberCopied ? (
+          <span className="text-xs text-emerald-600">Copied</span>
+        ) : (
+          <Copy className="h-3 w-3 text-slate-400" aria-hidden />
+        )}
+      </button>
+      {customerName ? (
+        <>
+          <span className="text-slate-300">·</span>
+          <span className="relative">
+            <button
+              type="button"
+              onClick={() => setCustomerPopoverOpen((o) => !o)}
+              className="inline-flex items-center gap-1 font-semibold text-slate-900 hover:text-[var(--primary)]"
+              title="Show customer contact"
+            >
+              {customerName}
+              <ChevronDown
+                className={cn(
+                  "h-3 w-3 text-slate-400 transition-transform",
+                  customerPopoverOpen ? "rotate-180" : ""
+                )}
+              />
+            </button>
+            {customerPopoverOpen ? (
+              <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-lg border border-slate-200 bg-white p-3 shadow-lg">
+                {(() => {
+                  const isEmail = customerContact.includes("@");
+                  const phone = !isEmail ? customerContact : "";
+                  const email = isEmail ? customerContact : "";
+                  const copy = async (val: string, which: "phone" | "email") => {
+                    try {
+                      await navigator.clipboard.writeText(val);
+                      setCopiedField(which);
+                      setTimeout(() => setCopiedField(null), 1200);
+                    } catch {
+                      /* ignore */
+                    }
+                  };
+                  return (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2 text-sm">
+                        <div className="min-w-0">
+                          <div className="text-xs uppercase tracking-wide text-slate-400">
+                            Phone
+                          </div>
+                          <div className="truncate font-medium text-slate-800">
+                            {phone || "—"}
+                          </div>
+                        </div>
+                        {phone ? (
+                          <button
+                            type="button"
+                            onClick={() => copy(phone, "phone")}
+                            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                            title="Copy phone"
+                          >
+                            {copiedField === "phone" ? (
+                              <span className="text-xs text-emerald-600">Copied</span>
+                            ) : (
+                              <Copy className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center justify-between gap-2 text-sm">
+                        <div className="min-w-0">
+                          <div className="text-xs uppercase tracking-wide text-slate-400">
+                            Email
+                          </div>
+                          <div className="truncate font-medium text-slate-800">
+                            {email || orderContact.email || "—"}
+                          </div>
+                        </div>
+                        {(email || orderContact.email) ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              copy(email || orderContact.email || "", "email")
+                            }
+                            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                            title="Copy email"
+                          >
+                            {copiedField === "email" ? (
+                              <span className="text-xs text-emerald-600">Copied</span>
+                            ) : (
+                              <Copy className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            ) : null}
+          </span>
+        </>
       ) : null}
-    </span>
+      <span className="text-slate-300">·</span>
+      <span className="font-medium text-slate-700">{ownerDisplay}</span>
+      <span className="text-slate-300">·</span>
+      <span
+        className={cn(
+          "text-slate-600",
+          isRush && dueDate ? "text-red-600 font-semibold" : ""
+        )}
+      >
+        <span className="text-xs uppercase tracking-wide text-slate-400">
+          Due:
+        </span>{" "}
+        <span className={isRush && dueDate ? "" : "font-medium text-slate-700"}>
+          {dueDisplay}
+        </span>
+      </span>
+      {priority && priority !== "normal" ? (
+        <>
+          <span className="text-slate-300">·</span>
+          <span
+            className={cn(
+              "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold uppercase tracking-wide",
+              isRush
+                ? "bg-red-100 text-red-700"
+                : "bg-amber-100 text-amber-700"
+            )}
+          >
+            {priorityLabel}
+          </span>
+        </>
+      ) : null}
+    </div>
   );
 
   return (
@@ -730,6 +870,7 @@ export function CardDetailModal({
               categories={categories}
               categoryId={categoryId}
               onCategoryIdChange={isViewOnly ? undefined : setCategoryId}
+              compactMode
             />
 
             {saveError ? (
@@ -740,26 +881,10 @@ export function CardDetailModal({
           </div>
 
           <div className="space-y-4">
-            {categories.length > 0 ? (
-              <div className="rounded-lg border border-slate-200 p-3 mt-4">
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Category
-                </p>
-                <select
-                  value={categoryId}
-                  disabled={isViewOnly}
-                  onChange={(e) => setCategoryId(e.target.value)}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-700 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-300 disabled:opacity-60"
-                >
-                  <option value="">— None —</option>
-                  {categories.map((cat) => (
-                    <option key={cat.id} value={cat.id}>
-                      {cat.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ) : null}
+            {/* Hayk 2026-06-30 — Category dropdown removed from modal.
+                Category is set at order-creation time (website/CRM webhook) and
+                is no longer per-order editable here. If a category needs to be
+                fixed, it's an admin action. */}
             {orderTags.length > 0 ? (
               <div className="rounded-lg border border-slate-200 p-3">
                 <p className="mb-2 text-sm font-semibold text-slate-700">Tags</p>
@@ -821,7 +946,10 @@ export function CardDetailModal({
               ) : null}
             </div>
 
-            {data ? (
+            {/* Hayk 2026-06-30 — Fast Action Buttons hidden in the redesign.
+                Column transitions move to drag/drop or a dedicated status
+                control. Original render kept commented for David's review. */}
+            {false && data ? (
               <FastActionButtonBar
                 buttons={fastActionButtons}
                 currentColumnId={data.order.column_id}

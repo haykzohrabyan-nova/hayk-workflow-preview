@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Copy } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy } from "lucide-react";
 import { Input, Label, Select, Textarea } from "@/components/ui/input";
 import { CustomFieldInput } from "./custom-field-input";
 import { SkuEditor, type SkuItem } from "./sku-editor";
@@ -68,6 +68,13 @@ export interface OrderFormBodyProps {
   categories?: Category[];
   categoryId?: string;
   onCategoryIdChange?: (value: string) => void;
+  /**
+   * Hayk 2026-06-30 redesign — when true:
+   * - Hide Priority / Owner / Due date (they live in the modal header now)
+   * - Hide Category dropdown (category is set at order-creation time via website/CRM)
+   * - Reorder body: Product details FIRST, then Artwork, then Customer, then Order Notes at the bottom
+   */
+  compactMode?: boolean;
 }
 
 export function OrderFormBody({
@@ -113,6 +120,7 @@ export function OrderFormBody({
   categories = [],
   categoryId = "",
   onCategoryIdChange,
+  compactMode = false,
 }: OrderFormBodyProps) {
   const resolved = resolveOrderFormFields(customFields);
   const { artworkField, designerField, orderQtyField, printFields } = resolved;
@@ -235,102 +243,185 @@ export function OrderFormBody({
     onDueDateChange(normalized);
   }
 
-  return (
-    <div className="space-y-4">
-      <div
-        className={
-          hideOrderNumberField
-            ? "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
-            : "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
-        }
-      >
-        {!hideOrderNumberField ? (
-          <div>
-            <Label htmlFor={`${idPrefix}-title`}>
-              Order Number<span className="ml-0.5 text-red-500">*</span>
-            </Label>
-            <Input
-              id={`${idPrefix}-title`}
-              required
-              readOnly={readOnly}
-              value={title}
-              onChange={(e) => onTitleChange(e.target.value)}
-              placeholder="e.g. PO-10245"
-              className={readOnly ? "bg-slate-50" : undefined}
-            />
-          </div>
-        ) : null}
+  // Hayk redesign — section blocks isolated so compactMode can re-order them.
+  const priorityOwnerDueBlock = compactMode ? null : (
+    <div
+      className={
+        hideOrderNumberField
+          ? "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
+          : "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+      }
+    >
+      {!hideOrderNumberField ? (
         <div>
-          <Label htmlFor={`${idPrefix}-priority`}>Priority</Label>
-          <Select
-            id={`${idPrefix}-priority`}
-            value={priority}
-            disabled={readOnly}
-            onChange={(e) => onPriorityChange(e.target.value)}
-          >
-            {PRIORITY_OPTIONS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </Select>
-        </div>
-        <div>
-          <Label htmlFor={`${idPrefix}-owner`}>Owner</Label>
-          <Select
-            id={`${idPrefix}-owner`}
-            value={ownerId}
-            disabled={readOnly}
-            onChange={(e) => onOwnerIdChange(e.target.value)}
-          >
-            <option value="">— Unassigned —</option>
-            {owners.length === 0 ? (
-              <option value="" disabled>
-                No account managers
-              </option>
-            ) : null}
-            {owners.map((owner) => (
-              <option key={owner.id} value={owner.id}>
-                {owner.name}
-              </option>
-            ))}
-          </Select>
-        </div>
-        <div>
-          <Label htmlFor={`${idPrefix}-due`}>Due date</Label>
+          <Label htmlFor={`${idPrefix}-title`}>
+            Order Number<span className="ml-0.5 text-red-500">*</span>
+          </Label>
           <Input
-            id={`${idPrefix}-due`}
-            type="date"
-            min={readOnly ? undefined : minDueDate}
+            id={`${idPrefix}-title`}
+            required
             readOnly={readOnly}
-            value={normalizedDueDate}
-            onChange={(e) => handleDueDateChange(e.target.value)}
-            aria-invalid={dueDateError ? true : undefined}
-            className={
-              dueDateError
-                ? "border-red-400 focus:border-red-500 focus:ring-red-500/30"
-                : readOnly
-                  ? "bg-slate-50"
-                  : undefined
-            }
+            value={title}
+            onChange={(e) => onTitleChange(e.target.value)}
+            placeholder="e.g. PO-10245"
+            className={readOnly ? "bg-slate-50" : undefined}
           />
-          {dueDateError ? (
-            <p className="mt-1 text-xs text-red-600">{dueDateError}</p>
-          ) : null}
         </div>
-      </div>
-
+      ) : null}
       <div>
-        <Label htmlFor={`${idPrefix}-desc`}>Order Description</Label>
-        <Textarea
-          id={`${idPrefix}-desc`}
+        <Label htmlFor={`${idPrefix}-priority`}>Priority</Label>
+        <Select
+          id={`${idPrefix}-priority`}
+          value={priority}
+          disabled={readOnly}
+          onChange={(e) => onPriorityChange(e.target.value)}
+        >
+          {PRIORITY_OPTIONS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <div>
+        <Label htmlFor={`${idPrefix}-owner`}>Owner</Label>
+        <Select
+          id={`${idPrefix}-owner`}
+          value={ownerId}
+          disabled={readOnly}
+          onChange={(e) => onOwnerIdChange(e.target.value)}
+        >
+          <option value="">— Unassigned —</option>
+          {owners.length === 0 ? (
+            <option value="" disabled>
+              No account managers
+            </option>
+          ) : null}
+          {owners.map((owner) => (
+            <option key={owner.id} value={owner.id}>
+              {owner.name}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <div>
+        <Label htmlFor={`${idPrefix}-due`}>Due date</Label>
+        <Input
+          id={`${idPrefix}-due`}
+          type="date"
+          min={readOnly ? undefined : minDueDate}
           readOnly={readOnly}
-          value={description}
-          onChange={(e) => onDescriptionChange(e.target.value)}
-          placeholder="Notes, references, special instructions…"
-          className={readOnly ? "bg-slate-50" : undefined}
+          value={normalizedDueDate}
+          onChange={(e) => handleDueDateChange(e.target.value)}
+          aria-invalid={dueDateError ? true : undefined}
+          className={
+            dueDateError
+              ? "border-red-400 focus:border-red-500 focus:ring-red-500/30"
+              : readOnly
+                ? "bg-slate-50"
+                : undefined
+          }
+        />
+        {dueDateError ? (
+          <p className="mt-1 text-xs text-red-600">{dueDateError}</p>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  const descriptionBlock = (
+    <div>
+      <Label htmlFor={`${idPrefix}-desc`}>
+        {compactMode ? "Order Notes" : "Order Description"}
+      </Label>
+      <Textarea
+        id={`${idPrefix}-desc`}
+        readOnly={readOnly}
+        value={description}
+        onChange={(e) => onDescriptionChange(e.target.value)}
+        placeholder="Notes, references, special instructions…"
+        className={readOnly ? "bg-slate-50" : undefined}
+      />
+    </div>
+  );
+
+  const artworkBlock = artworkField ? (
+    <div>
+      <Label htmlFor={`${idPrefix}-artwork`}>
+        {orderFormFieldLabel(artworkField.name)}
+        {artworkField.required ? (
+          <span className="ml-0.5 text-red-500">*</span>
+        ) : null}
+      </Label>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={copyArtworkLink}
+          disabled={!artworkValue}
+          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          title="Copy Artwork GDrive link"
+        >
+          <Copy className="h-4 w-4" />
+          {artworkCopied ? "Copied" : "Copy Link"}
+        </button>
+        <Input
+          id={`${idPrefix}-artwork`}
+          readOnly={readOnly}
+          value={(fieldValues[artworkField.id] as string) ?? ""}
+          onChange={(e) =>
+            onFieldValueChange(artworkField.id, e.target.value)
+          }
+          placeholder="https://drive.google.com/…"
+          className={cn(
+            "min-w-0 flex-1",
+            readOnly ? "bg-slate-50" : undefined
+          )}
         />
       </div>
+    </div>
+  ) : null;
+
+  if (compactMode) {
+    return <CompactBody
+      idPrefix={idPrefix}
+      readOnly={readOnly}
+      designers={designers}
+      designerField={designerField}
+      designerId={designerId}
+      onDesignerIdChange={onDesignerIdChange}
+      designTask={designTask}
+      onDesignTaskChange={onDesignTaskChange}
+      printFields={printFields}
+      fieldValues={fieldValues}
+      onFieldValueChange={onFieldValueChange}
+      skus={skus}
+      onSkusChange={onSkusChange}
+      orderId={orderId}
+      skuAssets={skuAssets}
+      skuImagesBySkuId={skuImagesBySkuId}
+      pendingSkuArtwork={pendingSkuArtwork}
+      onPendingSkuArtworkChange={onPendingSkuArtworkChange}
+      deferSkuArtworkUpload={deferSkuArtworkUpload}
+      removedSkuArtworkIds={removedSkuArtworkIds}
+      onMarkSkuArtworkForRemoval={onMarkSkuArtworkForRemoval}
+      onUnmarkSkuArtworkForRemoval={onUnmarkSkuArtworkForRemoval}
+      ensureSkuPersisted={ensureSkuPersisted}
+      orderQtyField={orderQtyField}
+      artworkBlock={artworkBlock}
+      customerName={customerName}
+      onCustomerNameChange={handleCustomerNameChange}
+      customerContact={customerContact}
+      onCustomerContactChange={onCustomerContactChange}
+      customerLookupHint={customerLookupHint}
+      descriptionBlock={descriptionBlock}
+    />;
+  }
+
+  return (
+    <div className="space-y-4">
+      {priorityOwnerDueBlock}
+
+      {descriptionBlock}
 
       {artworkField ? (
         <div>
@@ -479,6 +570,212 @@ export function OrderFormBody({
           readOnly={readOnly}
         />
       ) : null}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * CompactBody — Hayk redesign 2026-06-30
+ * Section order:
+ *   1) Customer block (collapsed name; click to expand phone + email)
+ *   2) Product details (print fields → SKU editor → order qty)
+ *   3) Artwork GDrive link
+ *   4) Designer + Design task
+ *   5) Order notes (bottom)
+ * ────────────────────────────────────────────────────────────────────────── */
+
+interface CompactBodyProps {
+  idPrefix: string;
+  readOnly: boolean;
+  designers: Designer[];
+  designerField: CustomField | undefined;
+  designerId: string;
+  onDesignerIdChange: (v: string) => void;
+  designTask: string;
+  onDesignTaskChange: (v: string) => void;
+  printFields: CustomField[];
+  fieldValues: Record<string, unknown>;
+  onFieldValueChange: (id: string, v: unknown) => void;
+  skus: SkuItem[];
+  onSkusChange: (v: SkuItem[]) => void;
+  orderId?: string;
+  skuAssets?: Asset[];
+  skuImagesBySkuId?: Record<string, OrderSkuImageWithUrl[]>;
+  pendingSkuArtwork?: Record<string, File>;
+  onPendingSkuArtworkChange?: (files: Record<string, File>) => void;
+  deferSkuArtworkUpload?: boolean;
+  removedSkuArtworkIds?: ReadonlySet<string>;
+  onMarkSkuArtworkForRemoval?: (id: string) => void;
+  onUnmarkSkuArtworkForRemoval?: (id: string) => void;
+  ensureSkuPersisted?: (id: string) => Promise<string | null>;
+  orderQtyField: CustomField | undefined;
+  artworkBlock: React.ReactNode;
+  customerName: string;
+  onCustomerNameChange: (v: string) => void;
+  customerContact: string;
+  onCustomerContactChange: (v: string) => void;
+  customerLookupHint: string | null;
+  descriptionBlock: React.ReactNode;
+}
+
+function CompactBody({
+  idPrefix,
+  readOnly,
+  designers,
+  designerField,
+  designerId,
+  onDesignerIdChange,
+  designTask,
+  onDesignTaskChange,
+  printFields,
+  fieldValues,
+  onFieldValueChange,
+  skus,
+  onSkusChange,
+  orderId,
+  skuAssets,
+  skuImagesBySkuId,
+  pendingSkuArtwork,
+  onPendingSkuArtworkChange,
+  deferSkuArtworkUpload,
+  removedSkuArtworkIds,
+  onMarkSkuArtworkForRemoval,
+  onUnmarkSkuArtworkForRemoval,
+  ensureSkuPersisted,
+  orderQtyField,
+  artworkBlock,
+  customerName,
+  onCustomerNameChange,
+  customerContact,
+  onCustomerContactChange,
+  customerLookupHint,
+  descriptionBlock,
+}: CompactBodyProps) {
+  const [customerOpen, setCustomerOpen] = useState(false);
+  // Split contact string into phone + email if a unified field is present.
+  const looksLikeEmail = customerContact.includes("@");
+  const phoneValue = !looksLikeEmail ? customerContact : "";
+  const emailValue = looksLikeEmail ? customerContact : "";
+
+  return (
+    <div className="space-y-5">
+      {/* Hayk 2026-06-30 — Customer block removed from body. Customer name +
+          phone + email are now in the modal header (clickable dropdown). */}
+
+      {/* Product details */}
+      <section className="rounded-xl border border-slate-200 bg-white p-4">
+        <header className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          Product Details
+        </header>
+        {printFields.length > 0 ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {printFields.map((field) => (
+              <CustomFieldInput
+                key={field.id}
+                field={{ ...field, name: orderFormFieldLabel(field.name) }}
+                value={fieldValues[field.id]}
+                onChange={(v) => onFieldValueChange(field.id, v)}
+                readOnly={readOnly}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-slate-400">No product details configured.</p>
+        )}
+      </section>
+
+      {/* SKUs + Quantity */}
+      <section className="rounded-xl border border-slate-200 bg-white p-4">
+        <header className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          SKUs & Quantity
+        </header>
+        <SkuEditor
+          value={skus}
+          onChange={onSkusChange}
+          orderId={orderId}
+          assets={skuAssets}
+          skuImagesBySkuId={skuImagesBySkuId}
+          pendingArtwork={pendingSkuArtwork}
+          onPendingArtworkChange={onPendingSkuArtworkChange}
+          deferArtworkUpload={deferSkuArtworkUpload}
+          removedArtworkIds={removedSkuArtworkIds}
+          onMarkArtworkForRemoval={onMarkSkuArtworkForRemoval}
+          onUnmarkArtworkForRemoval={onUnmarkSkuArtworkForRemoval}
+          ensureSkuPersisted={ensureSkuPersisted}
+          disabled={readOnly}
+        />
+        {orderQtyField ? (
+          <div className="mt-3">
+            <OrderQtyField
+              skus={skus}
+              value={(fieldValues[orderQtyField.id] as number | null) ?? null}
+              onChange={(v) => onFieldValueChange(orderQtyField.id, v)}
+              readOnly={readOnly}
+            />
+          </div>
+        ) : null}
+      </section>
+
+      {/* Artwork */}
+      {artworkBlock ? (
+        <section className="rounded-xl border border-slate-200 bg-white p-4">
+          <header className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            Artwork
+          </header>
+          {artworkBlock}
+        </section>
+      ) : null}
+
+      {/* Design assignment */}
+      <section className="rounded-xl border border-slate-200 bg-white p-4">
+        <header className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          Design
+        </header>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <Label htmlFor={`${idPrefix}-designer`}>
+              Designer
+              {designerField?.required ? (
+                <span className="ml-0.5 text-red-500">*</span>
+              ) : null}
+            </Label>
+            <Select
+              id={`${idPrefix}-designer`}
+              value={designerId}
+              disabled={readOnly}
+              onChange={(e) => onDesignerIdChange(e.target.value)}
+            >
+              <option value="">
+                {designers.length ? "Unassigned" : "No designers on team"}
+              </option>
+              {designers.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <Label htmlFor={`${idPrefix}-design-task`}>Design task</Label>
+            <Input
+              id={`${idPrefix}-design-task`}
+              readOnly={readOnly}
+              value={designTask}
+              onChange={(e) => onDesignTaskChange(e.target.value)}
+              placeholder="e.g. Prepare proof / prepress"
+              className={readOnly ? "bg-slate-50" : undefined}
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* Order notes */}
+      <section className="rounded-xl border border-slate-200 bg-white p-4">
+        <header className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          Order Notes
+        </header>
+        {descriptionBlock}
+      </section>
     </div>
   );
 }
