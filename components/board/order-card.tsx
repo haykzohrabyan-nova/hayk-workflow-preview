@@ -35,6 +35,12 @@ import {
 import { cn, formatDate, formatDateShort } from "@/lib/utils";
 import { ORDER_TAG_STYLES, orderTagsFromSpecs } from "@/lib/order-tags";
 import type { CustomField, OrderWithRelations } from "@/lib/types";
+import {
+  fmtDuration,
+  fmtSince,
+  totalWorkedSeconds,
+  type CommStateEntry,
+} from "@/lib/board-comm-state";
 
 interface OrderCardProps {
   order: OrderWithRelations;
@@ -51,6 +57,10 @@ interface OrderCardProps {
   onOpen: (order: OrderWithRelations) => void;
   /** V2 preview mode — approval column state indicator. */
   approvalState?: "waiting" | "customer_replied" | "approved" | null;
+  /** V2 preview mode — In-Progress card comm-state (Hayk 2026-07-01). */
+  commEntry?: CommStateEntry | null;
+  /** V2 preview: current time tick (ms) to force re-render of live durations. */
+  nowTick?: number;
 }
 
 export function OrderCard({
@@ -64,6 +74,8 @@ export function OrderCard({
   ownerName,
   onOpen,
   approvalState = null,
+  commEntry = null,
+  nowTick,
 }: OrderCardProps) {
   const {
     attributes,
@@ -207,6 +219,38 @@ export function OrderCard({
   const effectiveThumb =
     thumbnail && !thumbBroken ? thumbnail : STOCK_FALLBACK_THUMB;
 
+  // V2 In-Progress card comm-state — Hayk 2026-07-01.
+  // Cards stay in In Progress while designer waits on customer. The card
+  // itself changes visual state (dim/amber-pulse) instead of moving columns.
+  const commState = commEntry?.state ?? null;
+  const nowRef = nowTick ?? Date.now();
+  const workedSeconds = commEntry
+    ? totalWorkedSeconds(commEntry, nowRef)
+    : null;
+  const commChipText =
+    commEntry && commState === "awaiting-customer"
+      ? `⏳ Waiting ${fmtSince(commEntry.stateChangedAt, nowRef)}`
+      : commEntry && commState === "customer-replied"
+        ? `🔔 Replied ${fmtSince(commEntry.stateChangedAt, nowRef)}`
+        : null;
+  const commSubtitle =
+    commEntry && commState === "awaiting-customer" && commEntry.requestedItems
+      ? `Requested: ${commEntry.requestedItems}`
+      : commEntry && commState === "customer-replied" && commEntry.replyPreview
+        ? commEntry.replyPreview.length > 100
+          ? `${commEntry.replyPreview.slice(0, 100)}…`
+          : commEntry.replyPreview
+        : null;
+
+  const commWrapperStyle: React.CSSProperties = {};
+  if (commState === "awaiting-customer") {
+    commWrapperStyle.opacity = 0.75;
+  }
+  if (commState === "customer-replied") {
+    commWrapperStyle.border = "2px solid #f59e0b";
+    commWrapperStyle.animation = "wf-comm-pulse 2s ease-in-out infinite alternate";
+  }
+
   // V2 approval-column visual state — left border tint + top pill.
   const approvalBorder =
     approvalState === "waiting"
@@ -235,12 +279,12 @@ export function OrderCard({
   return (
     <div
       ref={setNodeRef}
-      style={style}
+      style={{ ...style, ...commWrapperStyle }}
       {...attributes}
       {...(canDrag ? listeners : {})}
       onClick={() => onOpen(order)}
       className={cn(
-        "group rounded-lg border bg-white shadow-sm transition-all hover:shadow-md hover:border-slate-300",
+        "relative group rounded-lg border bg-white shadow-sm transition-all hover:shadow-md hover:border-slate-300",
         isDesignerUnassigned
           ? UNASSIGNED_DESIGNER_CARD_CLASS
           : "border-slate-200",
@@ -249,6 +293,50 @@ export function OrderCard({
         canDrag ? "cursor-pointer" : "cursor-default"
       )}
     >
+    {commState === "customer-replied" ? (
+      <span
+        aria-hidden
+        className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-white"
+      />
+    ) : null}
+    {workedSeconds != null ? (
+      <span
+        className="absolute right-2 top-2 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500"
+        title={
+          commEntry?.activeSegmentStartedAt
+            ? "Active time on job"
+            : "Timer paused — waiting on customer"
+        }
+      >
+        ⏱ {fmtDuration(workedSeconds)}
+      </span>
+    ) : null}
+    {commChipText ? (
+      <div className="mb-1 flex items-center">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1",
+            commState === "customer-replied"
+              ? "bg-amber-50 text-amber-800 ring-amber-300"
+              : "bg-slate-100 text-slate-600 ring-slate-200"
+          )}
+        >
+          {commChipText}
+        </span>
+      </div>
+    ) : null}
+    {commSubtitle ? (
+      <div
+        className={cn(
+          "mb-1.5 line-clamp-2 text-[11px] leading-snug",
+          commState === "customer-replied"
+            ? "text-slate-700"
+            : "text-slate-500"
+        )}
+      >
+        {commSubtitle}
+      </div>
+    ) : null}
     {approvalPill ? (
       <div className="mb-2 flex items-center">{approvalPill}</div>
     ) : null}
