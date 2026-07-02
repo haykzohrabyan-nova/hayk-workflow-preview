@@ -19,6 +19,7 @@ import type {
   OrderWithRelations,
   Role,
 } from "@/lib/types";
+import type { CommStateEntry } from "@/lib/board-comm-state";
 
 type DateSort = "default" | "asc" | "desc";
 
@@ -41,6 +42,15 @@ interface ColumnProps {
   approvalStateByOrder?: Record<string, "waiting" | "customer_replied" | "approved">;
   /** V2 preview: dev-only button to flip a random waiting card to customer_replied. */
   onSimulateReply?: () => void;
+  /** V2 preview (Hayk 2026-07-01): per-order comm-state for In-Progress cards. */
+  commEntryByOrder?: Record<string, CommStateEntry>;
+  /** V2 preview: current tick ms — passed to cards for live duration re-render. */
+  nowTick?: number;
+  /** V2 preview: dev menu handler — flip a card's comm-state (In-Progress column). */
+  onCycleCommState?: (
+    orderId: string,
+    next: "active" | "awaiting-customer" | "customer-replied"
+  ) => void;
 }
 
 /** Short label of which roles a drop permission applies to. */
@@ -70,6 +80,9 @@ export function Column({
   onAdd,
   approvalStateByOrder,
   onSimulateReply,
+  commEntryByOrder,
+  nowTick,
+  onCycleCommState,
 }: ColumnProps) {
   const [dateSort, setDateSort] = useState<DateSort>("default");
 
@@ -82,6 +95,18 @@ export function Column({
   const showDropTarget = isDragActive && isOver && canAcceptDrop;
 
   const isApprovalColumn = !!approvalStateByOrder;
+  const isInProgressComm = !!commEntryByOrder;
+
+  // Load-summary counts (In Progress v2, Hayk 2026-07-01).
+  let repliedCount = 0;
+  let waitingCount = 0;
+  if (isInProgressComm) {
+    for (const o of orders) {
+      const s = commEntryByOrder![o.id]?.state;
+      if (s === "customer-replied") repliedCount++;
+      else if (s === "awaiting-customer") waitingCount++;
+    }
+  }
 
   const sortedOrders = isApprovalColumn
     ? [...orders].sort((a, b) => {
@@ -139,7 +164,9 @@ export function Column({
               {column.name}
             </span>
             <span className="rounded-full bg-white px-1.5 text-xs font-medium text-slate-500">
-              {orders.length}
+              {isInProgressComm
+                ? `${orders.length} job${orders.length === 1 ? "" : "s"}`
+                : orders.length}
             </span>
           </div>
           <div className="flex items-center gap-0.5">
@@ -204,6 +231,21 @@ export function Column({
             {dropLabel(column.drop_out_roles)}
           </span>
         </div>
+
+        {isInProgressComm && (repliedCount > 0 || waitingCount > 0) ? (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {repliedCount > 0 ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-300">
+                🔔 {repliedCount} replied
+              </span>
+            ) : null}
+            {waitingCount > 0 ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-slate-200/70 px-2 py-0.5 text-[10px] font-semibold text-slate-600 ring-1 ring-slate-300">
+                ⏳ {waitingCount} waiting
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div
@@ -227,23 +269,64 @@ export function Column({
           strategy={verticalListSortingStrategy}
         >
           {sortedOrders.map((order) => (
-            <OrderCard
-              key={order.id}
-              order={order}
-              canDrag={canDragCards}
-              customFields={customFields}
-              fieldValues={fieldValuesByOrder[order.id]}
-              thumbnail={thumbnailByOrder[order.id]}
-              designerName={designerNameByOrder[order.id]}
-              notificationBadge={notificationBadgeByOrder[order.id]}
-              ownerName={ownerNameByOrder[order.id]}
-              onOpen={onOpenOrder}
-              approvalState={
-                isApprovalColumn
-                  ? (approvalStateByOrder![order.id] ?? "waiting")
-                  : null
-              }
-            />
+            <div key={order.id} className="relative">
+              <OrderCard
+                order={order}
+                canDrag={canDragCards}
+                customFields={customFields}
+                fieldValues={fieldValuesByOrder[order.id]}
+                thumbnail={thumbnailByOrder[order.id]}
+                designerName={designerNameByOrder[order.id]}
+                notificationBadge={notificationBadgeByOrder[order.id]}
+                ownerName={ownerNameByOrder[order.id]}
+                onOpen={onOpenOrder}
+                approvalState={
+                  isApprovalColumn
+                    ? (approvalStateByOrder![order.id] ?? "waiting")
+                    : null
+                }
+                commEntry={
+                  isInProgressComm ? commEntryByOrder![order.id] ?? null : null
+                }
+                nowTick={nowTick}
+              />
+              {isInProgressComm && onCycleCommState ? (
+                <div
+                  className="mt-0.5 mb-1 flex flex-wrap gap-1 px-1"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onCycleCommState(order.id, "active")}
+                    className="rounded border border-dashed border-slate-300 bg-white px-1.5 py-0.5 text-[9px] font-semibold text-slate-500 hover:bg-slate-50"
+                    title="Simulate: mark active"
+                  >
+                    🎭 active
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onCycleCommState(order.id, "awaiting-customer")
+                    }
+                    className="rounded border border-dashed border-slate-300 bg-white px-1.5 py-0.5 text-[9px] font-semibold text-slate-500 hover:bg-slate-50"
+                    title="Simulate: sent request, awaiting customer"
+                  >
+                    🎭 waiting
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onCycleCommState(order.id, "customer-replied")
+                    }
+                    className="rounded border border-dashed border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700 hover:bg-amber-100"
+                    title="Simulate: customer replied"
+                  >
+                    🎭 replied
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ))}
         </SortableContext>
       </div>
