@@ -15,6 +15,11 @@ import {
   validateDueDate,
 } from "@/lib/order-form";
 import { cn, dateInputValue, localDateInputValue } from "@/lib/utils";
+import { PRODUCT_MATERIALS } from "@/lib/product-data";
+import {
+  hasKnownSubcategory,
+  shouldShowConditionalField,
+} from "@/lib/product-conditional-fields";
 import type { Asset, Category, CustomField, Designer, OrderSkuImageWithUrl } from "@/lib/types";
 
 export interface OrderOwner {
@@ -657,6 +662,43 @@ function CompactBody({
   const phoneValue = !looksLikeEmail ? customerContact : "";
   const emailValue = looksLikeEmail ? customerContact : "";
 
+  // Hayk 2026-07-02 — Doc 01 Change #4 + #8:
+  // 1) Look up the current "Product" selection so we can hide fields that
+  //    don't apply (Roll Direction, Die, Sides, Application…).
+  // 2) When rendering the Materials dropdown, narrow its options to the
+  //    materials whitelisted for that product (mirrors the live Bazaar site).
+  const productField = printFields.find(
+    (f) => f.name.toLowerCase() === "product"
+  );
+  const selectedProduct = productField
+    ? String(fieldValues[productField.id] ?? "").trim()
+    : "";
+  const subcategoryKnown = hasKnownSubcategory(selectedProduct);
+
+  // Filter printFields to those that should render for the selected product.
+  // Product itself is always shown (guaranteed by ALWAYS_SHOWN).
+  const visiblePrintFields = printFields.filter((f) =>
+    shouldShowConditionalField(f.name, selectedProduct)
+  );
+
+  // Build a per-field option override map for Materials narrowing.
+  function fieldForRender(field: CustomField): CustomField {
+    const isMaterials = field.name.toLowerCase() === "materials"
+      || field.name.toLowerCase() === "material";
+    if (isMaterials && selectedProduct) {
+      const allowed = PRODUCT_MATERIALS[selectedProduct];
+      if (allowed && allowed.length > 0) {
+        // Preserve original ordering from field.options where possible.
+        const allowedSet = new Set(allowed);
+        const filtered = field.options.filter((o) => allowedSet.has(o));
+        // If nothing survived the filter (data drift), fall back to allowed.
+        const finalOpts = filtered.length > 0 ? filtered : allowed;
+        return { ...field, options: finalOpts };
+      }
+    }
+    return field;
+  }
+
   return (
     <div className="space-y-5">
       {/* Hayk 2026-06-30 — Customer block removed from body. Customer name +
@@ -664,20 +706,33 @@ function CompactBody({
 
       {/* Product details */}
       <section className="rounded-xl border border-slate-200 bg-white p-4">
-        <header className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-          Product Details
+        <header className="mb-3 flex items-center justify-between">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            Product Details
+          </span>
+          {selectedProduct && !subcategoryKnown ? (
+            <span className="text-[10px] font-normal italic text-slate-400">
+              subcategory unknown — showing all fields
+            </span>
+          ) : null}
         </header>
-        {printFields.length > 0 ? (
+        {visiblePrintFields.length > 0 ? (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {printFields.map((field) => (
-              <CustomFieldInput
-                key={field.id}
-                field={{ ...field, name: orderFormFieldLabel(field.name) }}
-                value={fieldValues[field.id]}
-                onChange={(v) => onFieldValueChange(field.id, v)}
-                readOnly={readOnly}
-              />
-            ))}
+            {visiblePrintFields.map((field) => {
+              const forRender = fieldForRender(field);
+              return (
+                <CustomFieldInput
+                  key={field.id}
+                  field={{
+                    ...forRender,
+                    name: orderFormFieldLabel(forRender.name),
+                  }}
+                  value={fieldValues[field.id]}
+                  onChange={(v) => onFieldValueChange(field.id, v)}
+                  readOnly={readOnly}
+                />
+              );
+            })}
           </div>
         ) : (
           <p className="text-sm text-slate-400">No product details configured.</p>
@@ -689,6 +744,20 @@ function CompactBody({
         <header className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
           SKUs & Quantity
         </header>
+        {/* Hayk 2026-07-02 — Doc 01 Bonus: rich product line-item summary card.
+            Mirrors the Bazaar-admin cart shape so production sees:
+              [thumb]  Product · Material · Size · Finish · N pcs
+                       0 File(s) Uploaded
+            No unit / extended pricing yet (workflow app doesn't carry
+            price data). Icons kept out until wired to real actions. */}
+        <ProductLineItemSummary
+          skus={skus}
+          printFields={printFields}
+          fieldValues={fieldValues}
+          skuAssetsCount={
+            (skuAssets ?? []).filter((a) => a.sku_key).length
+          }
+        />
         <SkuEditor
           value={skus}
           onChange={onSkusChange}
@@ -776,6 +845,107 @@ function CompactBody({
         </header>
         {descriptionBlock}
       </section>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * ProductLineItemSummary — Hayk redesign 2026-07-02 (Doc 01 Bonus)
+ * Rich product-spec summary card that appears above the raw SKU editor. Mirrors
+ * how the Bazaar admin cart shows a line item so production staff scan the
+ * spec line at a glance rather than parsing individual fields.
+ *
+ * Renders when there's at least one SKU or a Product selected. Shows:
+ *   • Thumbnail (product-type icon — swap for uploaded artwork later)
+ *   • Product · Material · Size · Finish · N pcs (spec line)
+ *   • Files-uploaded count (from sku_key-attached assets)
+ * ────────────────────────────────────────────────────────────────────────── */
+function ProductLineItemSummary({
+  skus,
+  printFields,
+  fieldValues,
+  skuAssetsCount,
+}: {
+  skus: SkuItem[];
+  printFields: CustomField[];
+  fieldValues: Record<string, unknown>;
+  skuAssetsCount: number;
+}) {
+  const totalQty = skus.reduce(
+    (sum, s) =>
+      sum + (typeof s.qty === "number" && !Number.isNaN(s.qty) ? s.qty : 0),
+    0
+  );
+  const byName = (n: string) =>
+    printFields.find((f) => f.name.toLowerCase() === n.toLowerCase());
+  const val = (name: string): string => {
+    const f = byName(name);
+    if (!f) return "";
+    return String(fieldValues[f.id] ?? "").trim();
+  };
+  const product = val("Product");
+  const material = val("Materials") || val("Material");
+  const size = val("Finished Size");
+  const finish = val("Finishing");
+  const color = val("Color");
+  const sides = val("Sides");
+  const direction = val("Roll Direction") || val("Direction");
+
+  // Nothing to show if the order has no product AND no SKUs yet.
+  if (!product && skus.length === 0) return null;
+
+  const specParts = [
+    product,
+    material,
+    size,
+    finish,
+    color,
+    sides,
+    direction && `Dir ${direction}`,
+    totalQty > 0 && `${totalQty.toLocaleString()} pcs`,
+  ].filter(Boolean);
+
+  return (
+    <div className="mb-3 flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+      <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-2xl">
+        {product.toLowerCase().includes("pouch")
+          ? "🧴"
+          : product.toLowerCase().includes("box") ||
+              product.toLowerCase().includes("carton")
+            ? "📦"
+            : product.toLowerCase().includes("label")
+              ? "🏷️"
+              : product.toLowerCase().includes("sticker")
+                ? "✨"
+                : product.toLowerCase().includes("card")
+                  ? "🪪"
+                  : "🖨️"}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-slate-800">
+          {product || "Product not set"}
+        </p>
+        <p className="truncate text-xs text-slate-500">
+          {specParts.length > 1
+            ? specParts.slice(1).join(" · ")
+            : "Add material, size, and quantity to complete the spec"}
+        </p>
+        <p className="mt-1 text-[11px] font-medium text-slate-500">
+          {skuAssetsCount === 0
+            ? "0 File(s) Uploaded"
+            : `${skuAssetsCount} File(s) Uploaded`}
+        </p>
+      </div>
+      <div className="shrink-0 text-right text-xs text-slate-500">
+        <div className="font-semibold text-slate-700">
+          {skus.length} SKU{skus.length === 1 ? "" : "s"}
+        </div>
+        {totalQty > 0 ? (
+          <div className="text-slate-500">
+            {totalQty.toLocaleString()} pcs
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
