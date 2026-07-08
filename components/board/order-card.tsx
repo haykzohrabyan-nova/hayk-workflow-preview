@@ -392,6 +392,30 @@ export function OrderCard({
         </div>
       ) : null}
 
+      {/* Owner row — account manager / sales rep who owns this order.
+          Arrives via the CRM order webhook (owner = sales rep on linked lead,
+          else quote creator) or manual assignment in the modal. Shown on the
+          collapsed card so staff can see whose order it is without opening. */}
+      <div className="mt-1.5 flex min-w-0 items-center gap-1 text-[10px] font-medium">
+        {ownerName?.trim() ? (
+          <span
+            className="inline-flex max-w-[180px] items-center gap-1 truncate text-slate-600"
+            title={`Account manager: ${ownerName}`}
+          >
+            <User className="h-2.5 w-2.5 shrink-0 text-slate-400" />
+            <span className="truncate">AM {ownerName}</span>
+          </span>
+        ) : (
+          <span
+            className="inline-flex items-center gap-1 text-slate-300"
+            title="No account manager assigned — order arrived without an owner or the CRM rep name didn't match a board member"
+          >
+            <User className="h-2.5 w-2.5 shrink-0" />
+            AM —
+          </span>
+        )}
+      </div>
+
       {/* Bottom row — designer chip · due date · priority · chevron */}
       <div className="mt-2 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
